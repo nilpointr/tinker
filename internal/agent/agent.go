@@ -33,9 +33,13 @@ When the task is complete, signal done:
 ` + "```" + `
 
 Rules:
-- Call exactly one tool per response.
+- Only call a tool when the task genuinely requires one. For conversational
+  answers or questions you can answer from knowledge, respond in prose and
+  then call done directly — do not call a file tool to demonstrate capability.
+- Call at most one tool per response.
 - All file paths are relative to the project root; you cannot access paths outside it.
-- You MUST eventually call done — it is the only way to end the session.`
+- You MUST end every response with either a tool call or done. done is the
+  only way to end the session.`
 
 const repairPrompt = `Your previous response could not be parsed as a tool call: %s
 
