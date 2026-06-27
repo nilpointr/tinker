@@ -96,8 +96,8 @@ func TestDoneMsg_TransitionsToDone(t *testing.T) {
 	m := newTestModel()
 	m.state = stateRunning
 	m = update(m, doneMsg("all done"))
-	if m.state != stateDone {
-		t.Errorf("state: got %d, want stateDone", m.state)
+	if m.state != stateInput {
+		t.Errorf("state: got %d, want stateInput (ready for next task)", m.state)
 	}
 	found := false
 	for _, l := range m.lines {
@@ -115,8 +115,8 @@ func TestDoneMsg_EmptySummary(t *testing.T) {
 	m := newTestModel()
 	m.state = stateRunning
 	m = update(m, doneMsg(""))
-	if m.state != stateDone {
-		t.Errorf("state: got %d, want stateDone", m.state)
+	if m.state != stateInput {
+		t.Errorf("state: got %d, want stateInput (ready for next task)", m.state)
 	}
 }
 

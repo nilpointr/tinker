@@ -1,12 +1,15 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+const maxReadBytes = 256 * 1024 // 256 KB
 
 // ReadFile reads a file within the sandboxed root and returns its contents.
 type ReadFile struct{ root string }
@@ -25,6 +28,12 @@ func (t ReadFile) Execute(_ context.Context, args map[string]any) (string, error
 	data, err := os.ReadFile(safe)
 	if err != nil {
 		return "", err
+	}
+	if len(data) > maxReadBytes {
+		return "", fmt.Errorf("file too large to read (%d bytes); maximum is %d bytes", len(data), maxReadBytes)
+	}
+	if bytes.IndexByte(data, 0) != -1 {
+		return "", fmt.Errorf("file appears to be binary and cannot be read as text")
 	}
 	return string(data), nil
 }
