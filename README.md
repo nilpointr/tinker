@@ -6,8 +6,8 @@ what happens next. The goal is to learn agent harness mechanics — reasoning lo
 tool execution, context management — by building every layer from scratch, including
 the part where you realize why sandboxing matters.
 
-> **Status:** early development — the model can't do anything yet, which is arguably
-> the safest it will ever be.
+> **Status:** early development — the model can now do things, which is exactly
+> when sandboxing starts to matter.
 
 ## Requirements
 
