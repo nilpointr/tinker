@@ -11,7 +11,7 @@ the part where you realize why sandboxing matters.
 
 ## Requirements
 
-- Go 1.21+
+- Go 1.26+
 - [Ollama](https://ollama.com) running locally
 - Model pulled: `ollama pull qwen2.5-coder:14b`
 
