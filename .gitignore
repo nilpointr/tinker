@@ -1,0 +1,22 @@
+# Binaries
+/bin/
+
+# Build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# Claude Code local settings
+.claude/
+
+# Environment
+.env
+.env.local
