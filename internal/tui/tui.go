@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/nilpointr/tinker/internal/agent"
@@ -17,7 +18,6 @@ const (
 	stateInput   state = iota
 	stateRunning       // agent loop is running
 	stateApprove       // waiting for y/n on a tool call
-	stateDone
 	stateError
 )
 
@@ -43,13 +43,15 @@ type Model struct {
 	pp     **tea.Program
 	cancel context.CancelFunc
 
-	state   state
-	input   textinput.Model
-	lines   []string
-	pending *approveReqMsg
-	err     error
-	width   int
-	height  int
+	state    state
+	input    textinput.Model
+	vp       viewport.Model
+	content  []byte // accumulates all output; viewport renders a window into it
+	pending  *approveReqMsg
+	err      error
+	width    int
+	height   int
+	ready    bool // true after first WindowSizeMsg
 }
 
 // New returns a Model ready to pass to tea.NewProgram.
@@ -75,23 +77,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.input.Width = msg.Width - 4
+		vpHeight := msg.Height - 2 // divider + status line
+		if !m.ready {
+			m.vp = viewport.New(msg.Width, vpHeight)
+			m.ready = true
+		} else {
+			m.vp.Width = msg.Width
+			m.vp.Height = vpHeight
+		}
+		m.vp.SetContent(string(m.content))
 		return m, nil
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
 	case tokenMsg:
-		parts := strings.Split(string(msg), "\n")
-		for i, part := range parts {
-			if i == 0 {
-				if len(m.lines) == 0 {
-					m.lines = append(m.lines, part)
-				} else {
-					m.lines[len(m.lines)-1] += part
-				}
-			} else {
-				m.lines = append(m.lines, part)
-			}
+		m.content = append(m.content, msg...)
+		if m.ready {
+			m.vp.SetContent(string(m.content))
+			m.vp.GotoBottom()
 		}
 		return m, nil
 
@@ -101,18 +105,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case toolResultMsg:
-		m.lines = append(m.lines, "", "  → "+string(msg), "")
+		m.content = fmt.Appendf(m.content, "\n  → %s\n\n", string(msg))
+		if m.ready {
+			m.vp.SetContent(string(m.content))
+			m.vp.GotoBottom()
+		}
 		m.state = stateRunning
 		return m, nil
 
 	case doneMsg:
-		m.lines = append(m.lines, "")
 		if string(msg) != "" {
-			m.lines = append(m.lines, "Done: "+string(msg))
+			m.content = fmt.Appendf(m.content, "\n\nDone: %s\n\n", string(msg))
 		} else {
-			m.lines = append(m.lines, "Done.")
+			m.content = append(m.content, "\n\nDone.\n\n"...)
 		}
-		m.lines = append(m.lines, "")
+		if m.ready {
+			m.vp.SetContent(string(m.content))
+			m.vp.GotoBottom()
+		}
 		m.state = stateInput
 		m.input.Focus()
 		return m, textinput.Blink
@@ -123,15 +133,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	default:
-		// Forward unhandled messages to the text input (needed for cursor blink).
+		// Forward unhandled messages to active component (blink ticks, etc.).
+		var cmds []tea.Cmd
 		if m.state == stateInput {
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(msg)
-			return m, cmd
+			cmds = append(cmds, cmd)
 		}
+		if m.ready {
+			var cmd tea.Cmd
+			m.vp, cmd = m.vp.Update(msg)
+			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
 	}
-
-	return m, nil
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -147,7 +162,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.state = stateRunning
 			m.input.SetValue("")
-			m.lines = append(m.lines, "> "+task, "")
+			m.content = fmt.Appendf(m.content, "> %s\n\n", task)
+			if m.ready {
+				m.vp.SetContent(string(m.content))
+				m.vp.GotoBottom()
+			}
 			ctx, cancel := context.WithCancel(context.Background())
 			m.cancel = cancel
 			pp := m.pp
@@ -205,14 +224,26 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.cancel()
 			}
 			return m, tea.Quit
+		default:
+			// Allow scrolling through history while waiting to approve.
+			if m.ready {
+				var cmd tea.Cmd
+				m.vp, cmd = m.vp.Update(msg)
+				return m, cmd
+			}
 		}
 
-	case stateRunning, stateDone, stateError:
+	case stateRunning, stateError:
 		if msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyEsc {
 			if m.cancel != nil {
 				m.cancel()
 			}
 			return m, tea.Quit
+		}
+		if m.ready {
+			var cmd tea.Cmd
+			m.vp, cmd = m.vp.Update(msg)
+			return m, cmd
 		}
 	}
 
@@ -220,28 +251,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	if m.width == 0 {
+	if !m.ready {
 		return "loading…"
 	}
-
-	outputHeight := m.height - 3
-	if outputHeight < 1 {
-		outputHeight = 1
-	}
-
-	// Take the last outputHeight committed lines, pad with empty lines at top.
-	start := len(m.lines) - outputHeight
-	if start < 0 {
-		start = 0
-	}
-	visible := m.lines[start:]
-
-	display := make([]string, outputHeight)
-	offset := outputHeight - len(visible)
-	for i, line := range visible {
-		display[offset+i] = line
-	}
-	output := strings.Join(display, "\n")
 
 	divider := strings.Repeat("─", m.width)
 
@@ -256,13 +268,11 @@ func (m Model) View() string {
 			statusLine = fmt.Sprintf("  Run %s(%s)? [y/n]",
 				m.pending.name, formatArgs(m.pending.args))
 		}
-	case stateDone:
-		statusLine = "  press ctrl+c to exit"
 	case stateError:
 		statusLine = fmt.Sprintf("  error: %v (ctrl+c to exit)", m.err)
 	}
 
-	return output + "\n" + divider + "\n" + statusLine
+	return m.vp.View() + "\n" + divider + "\n" + statusLine
 }
 
 func formatArgs(args map[string]any) string {

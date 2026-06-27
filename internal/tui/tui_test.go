@@ -8,10 +8,16 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// newTestModel returns a Model with no agent or program reference,
-// suitable for testing Update/View without a running Tea program.
 func newTestModel() Model {
 	return New(nil, nil)
+}
+
+// sizedModel returns a model that has received a WindowSizeMsg,
+// so the viewport is initialised and View() renders properly.
+func sizedModel() Model {
+	m := newTestModel()
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	return next.(Model)
 }
 
 func update(m Model, msg tea.Msg) Model {
@@ -19,32 +25,34 @@ func update(m Model, msg tea.Msg) Model {
 	return next.(Model)
 }
 
+// --- init / sizing ---
+
 func TestInit_ReturnsCmd(t *testing.T) {
-	m := newTestModel()
-	if m.Init() == nil {
+	if newTestModel().Init() == nil {
 		t.Error("Init should return a non-nil command (textinput.Blink)")
 	}
 }
 
 func TestWindowSize(t *testing.T) {
-	m := newTestModel()
-	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	m := update(newTestModel(), tea.WindowSizeMsg{Width: 100, Height: 40})
 	if m.width != 100 || m.height != 40 {
 		t.Errorf("size: got %dx%d, want 100x40", m.width, m.height)
 	}
+	if !m.ready {
+		t.Error("ready should be true after WindowSizeMsg")
+	}
 }
 
+// --- View ---
+
 func TestView_BeforeSizeSet(t *testing.T) {
-	m := newTestModel()
-	if m.View() == "" {
-		t.Error("View() should return non-empty content even before WindowSizeMsg")
+	if newTestModel().View() == "" {
+		t.Error("View() should return non-empty content before WindowSizeMsg")
 	}
 }
 
 func TestView_AfterSizeSet(t *testing.T) {
-	m := newTestModel()
-	m = update(m, tea.WindowSizeMsg{Width: 80, Height: 24})
-	v := m.View()
+	v := sizedModel().View()
 	if v == "" {
 		t.Error("View() returned empty string")
 	}
@@ -53,61 +61,49 @@ func TestView_AfterSizeSet(t *testing.T) {
 	}
 }
 
-func TestTokenMsg_AppendsToLines(t *testing.T) {
+// --- tokenMsg ---
+
+func TestTokenMsg_AppendsToContent(t *testing.T) {
 	m := newTestModel()
 	m.state = stateRunning
 	m = update(m, tokenMsg("hello "))
 	m = update(m, tokenMsg("world"))
-	if len(m.lines) == 0 {
-		t.Fatal("expected at least one line")
-	}
-	last := m.lines[len(m.lines)-1]
-	if last != "hello world" {
-		t.Errorf("last line: got %q, want %q", last, "hello world")
+	if !strings.Contains(string(m.content), "hello world") {
+		t.Errorf("content: got %q, want it to contain %q", string(m.content), "hello world")
 	}
 }
 
-func TestTokenMsg_SplitsNewlines(t *testing.T) {
+func TestTokenMsg_PreservesNewlines(t *testing.T) {
 	m := newTestModel()
 	m.state = stateRunning
 	m = update(m, tokenMsg("line1\nline2\nline3"))
-	if len(m.lines) != 3 {
-		t.Errorf("expected 3 lines, got %d: %v", len(m.lines), m.lines)
+	if !strings.Contains(string(m.content), "line1\nline2\nline3") {
+		t.Errorf("content missing expected newlines: %q", string(m.content))
 	}
 }
+
+// --- toolResultMsg ---
 
 func TestToolResultMsg(t *testing.T) {
 	m := newTestModel()
 	m.state = stateRunning
 	m = update(m, toolResultMsg("file.txt"))
-	found := false
-	for _, l := range m.lines {
-		if strings.Contains(l, "file.txt") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("result not in lines: %v", m.lines)
+	if !strings.Contains(string(m.content), "file.txt") {
+		t.Errorf("result not in content: %q", string(m.content))
 	}
 }
 
-func TestDoneMsg_TransitionsToDone(t *testing.T) {
+// --- doneMsg ---
+
+func TestDoneMsg_ReturnToInput(t *testing.T) {
 	m := newTestModel()
 	m.state = stateRunning
 	m = update(m, doneMsg("all done"))
 	if m.state != stateInput {
 		t.Errorf("state: got %d, want stateInput (ready for next task)", m.state)
 	}
-	found := false
-	for _, l := range m.lines {
-		if strings.Contains(l, "all done") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("summary not in lines: %v", m.lines)
+	if !strings.Contains(string(m.content), "all done") {
+		t.Errorf("summary not in content: %q", string(m.content))
 	}
 }
 
@@ -116,9 +112,11 @@ func TestDoneMsg_EmptySummary(t *testing.T) {
 	m.state = stateRunning
 	m = update(m, doneMsg(""))
 	if m.state != stateInput {
-		t.Errorf("state: got %d, want stateInput (ready for next task)", m.state)
+		t.Errorf("state: got %d, want stateInput", m.state)
 	}
 }
+
+// --- errMsg ---
 
 func TestErrMsg_TransitionsToError(t *testing.T) {
 	m := newTestModel()
@@ -131,6 +129,8 @@ func TestErrMsg_TransitionsToError(t *testing.T) {
 		t.Error("err should be set")
 	}
 }
+
+// --- approve ---
 
 func TestApproveReqMsg_TransitionsToApprove(t *testing.T) {
 	m := newTestModel()
@@ -188,8 +188,7 @@ func TestApproveKey_No(t *testing.T) {
 }
 
 func TestView_ShowsApprovePrompt(t *testing.T) {
-	m := newTestModel()
-	m = update(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m := sizedModel()
 	m.state = stateApprove
 	m.pending = &approveReqMsg{
 		name: "write_file",
