@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/nilpointr/tinker/internal/llm"
 	"github.com/nilpointr/tinker/internal/tools"
@@ -54,12 +55,20 @@ type Chatter interface {
 // RunOptions configures callbacks for the agent loop.
 // All fields are optional; nil callbacks are silently skipped.
 type RunOptions struct {
+	// OnGenerateStart is called before each Chat request.
+	OnGenerateStart func()
 	// OnToken is called for each token as the model streams its response.
 	OnToken func(string)
-	// OnToolCall is called before a tool is executed, with the tool name and args.
+	// OnProse is called after extraction with the prose portion of the response
+	// (the full response minus the tool block). Use this to display the cleaned
+	// model output; use OnToken for the raw stream.
+	OnProse func(prose string)
+	// OnToolCall is called after a tool call is extracted, before execution.
 	OnToolCall func(name string, args map[string]any)
 	// OnToolResult is called after a tool executes, with the result string.
 	OnToolResult func(result string)
+	// OnRepair is called on each repair attempt with the attempt number and error.
+	OnRepair func(attempt int, err error)
 	// ShouldApprove is called before each tool execution. Return false to skip
 	// execution; the agent will surface a "denied" result to the model instead.
 	ShouldApprove func(name string, args map[string]any) bool
@@ -95,15 +104,25 @@ func (a *Agent) Run(ctx context.Context, task string, opts RunOptions) error {
 			return ctx.Err()
 		}
 
+		if opts.OnGenerateStart != nil {
+			opts.OnGenerateStart()
+		}
+
 		assistantMsg, err := a.chatter.Chat(ctx, a.messages, opts.OnToken)
 		if err != nil {
 			return fmt.Errorf("chat: %w", err)
 		}
 		a.messages = append(a.messages, assistantMsg)
 
-		call, err := a.extractWithRepair(ctx, assistantMsg.Content, opts.OnToken)
+		call, final, err := a.extractWithRepair(ctx, assistantMsg.Content, opts)
 		if err != nil {
 			return fmt.Errorf("extract tool call: %w", err)
+		}
+
+		if opts.OnProse != nil {
+			if prose := stripLastToolBlock(final); prose != "" {
+				opts.OnProse(prose)
+			}
 		}
 
 		if call.Name == "done" {
@@ -140,14 +159,19 @@ func (a *Agent) Run(ctx context.Context, task string, opts RunOptions) error {
 }
 
 // extractWithRepair attempts to extract a tool call from response, re-prompting
-// the model up to maxRepairAttempts times if parsing fails.
-func (a *Agent) extractWithRepair(ctx context.Context, response string, onToken func(string)) (*llm.ToolCall, error) {
+// the model up to maxRepairAttempts times if parsing fails. Returns the tool
+// call and the response content that was successfully parsed.
+func (a *Agent) extractWithRepair(ctx context.Context, response string, opts RunOptions) (*llm.ToolCall, string, error) {
 	call, err := a.extractor.Extract(response)
 	if err == nil {
-		return call, nil
+		return call, response, nil
 	}
 
 	for attempt := 0; attempt < maxRepairAttempts; attempt++ {
+		if opts.OnRepair != nil {
+			opts.OnRepair(attempt+1, err)
+		}
+
 		repair := fmt.Sprintf(repairPrompt, err)
 		// Append the failed assistant turn and the repair request as a user turn
 		// so the model sees exactly what went wrong.
@@ -156,20 +180,33 @@ func (a *Agent) extractWithRepair(ctx context.Context, response string, onToken 
 			llm.Message{Role: llm.RoleUser, Content: repair},
 		)
 
+		if opts.OnGenerateStart != nil {
+			opts.OnGenerateStart()
+		}
+
 		var repairMsg llm.Message
-		repairMsg, err = a.chatter.Chat(ctx, a.messages, onToken)
+		repairMsg, err = a.chatter.Chat(ctx, a.messages, opts.OnToken)
 		if err != nil {
-			return nil, fmt.Errorf("repair chat: %w", err)
+			return nil, "", fmt.Errorf("repair chat: %w", err)
 		}
 		a.messages = append(a.messages, repairMsg)
 		response = repairMsg.Content
 
 		call, err = a.extractor.Extract(response)
 		if err == nil {
-			return call, nil
+			return call, response, nil
 		}
 	}
 
-	return nil, fmt.Errorf("failed to extract tool call after %d repair attempts: %w", maxRepairAttempts, err)
+	return nil, "", fmt.Errorf("failed to extract tool call after %d repair attempts: %w", maxRepairAttempts, err)
 }
 
+// stripLastToolBlock returns the prose portion of a response by removing the
+// last ```tool ... ``` block and any trailing whitespace before it.
+func stripLastToolBlock(s string) string {
+	idx := strings.LastIndex(s, "```tool")
+	if idx == -1 {
+		return strings.TrimSpace(s)
+	}
+	return strings.TrimRight(s[:idx], " \t\n\r")
+}

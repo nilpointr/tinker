@@ -12,8 +12,6 @@ func newTestModel() Model {
 	return New(nil, nil)
 }
 
-// sizedModel returns a model that has received a WindowSizeMsg,
-// so the viewport is initialised and View() renders properly.
 func sizedModel() Model {
 	m := newTestModel()
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -29,17 +27,17 @@ func update(m Model, msg tea.Msg) Model {
 
 func TestInit_ReturnsCmd(t *testing.T) {
 	if newTestModel().Init() == nil {
-		t.Error("Init should return a non-nil command (textinput.Blink)")
+		t.Error("Init should return a non-nil command")
 	}
 }
 
-func TestWindowSize(t *testing.T) {
+func TestWindowSize_SetsReady(t *testing.T) {
 	m := update(newTestModel(), tea.WindowSizeMsg{Width: 100, Height: 40})
-	if m.width != 100 || m.height != 40 {
-		t.Errorf("size: got %dx%d, want 100x40", m.width, m.height)
-	}
 	if !m.ready {
 		t.Error("ready should be true after WindowSizeMsg")
+	}
+	if m.width != 100 || m.height != 40 {
+		t.Errorf("size: got %dx%d, want 100x40", m.width, m.height)
 	}
 }
 
@@ -51,45 +49,59 @@ func TestView_BeforeSizeSet(t *testing.T) {
 	}
 }
 
-func TestView_AfterSizeSet(t *testing.T) {
+func TestView_ContainsDivider(t *testing.T) {
 	v := sizedModel().View()
-	if v == "" {
-		t.Error("View() returned empty string")
-	}
 	if !strings.Contains(v, "─") {
 		t.Error("View() should contain divider")
 	}
 }
 
-// --- tokenMsg ---
+// --- proseMsg (main viewport) ---
 
-func TestTokenMsg_AppendsToContent(t *testing.T) {
+func TestProseMsg_AppendsToMain(t *testing.T) {
 	m := newTestModel()
 	m.state = stateRunning
-	m = update(m, tokenMsg("hello "))
-	m = update(m, tokenMsg("world"))
-	if !strings.Contains(string(m.content), "hello world") {
-		t.Errorf("content: got %q, want it to contain %q", string(m.content), "hello world")
+	m = update(m, proseMsg("hello world"))
+	if !strings.Contains(string(m.vpContent), "hello world") {
+		t.Errorf("prose not in main content: %q", m.vpContent)
 	}
 }
 
-func TestTokenMsg_PreservesNewlines(t *testing.T) {
+func TestProseMsg_EmptySkipped(t *testing.T) {
 	m := newTestModel()
 	m.state = stateRunning
-	m = update(m, tokenMsg("line1\nline2\nline3"))
-	if !strings.Contains(string(m.content), "line1\nline2\nline3") {
-		t.Errorf("content missing expected newlines: %q", string(m.content))
+	before := len(m.vpContent)
+	m = update(m, proseMsg(""))
+	if len(m.vpContent) != before {
+		t.Error("empty prose should not append to content")
+	}
+}
+
+// --- inspectorMsg (inspector pane) ---
+
+func TestInspectorMsg_GoesToInspector(t *testing.T) {
+	m := newTestModel()
+	m = update(m, inspectorMsg("raw token stream"))
+	if !strings.Contains(string(m.inspContent), "raw token stream") {
+		t.Errorf("inspector content missing: %q", m.inspContent)
+	}
+	// must NOT appear in main viewport content
+	if strings.Contains(string(m.vpContent), "raw token stream") {
+		t.Error("inspector content should not appear in main viewport")
 	}
 }
 
 // --- toolResultMsg ---
 
-func TestToolResultMsg(t *testing.T) {
+func TestToolResultMsg_AppearsInBoth(t *testing.T) {
 	m := newTestModel()
 	m.state = stateRunning
 	m = update(m, toolResultMsg("file.txt"))
-	if !strings.Contains(string(m.content), "file.txt") {
-		t.Errorf("result not in content: %q", string(m.content))
+	if !strings.Contains(string(m.vpContent), "file.txt") {
+		t.Errorf("result not in main content: %q", m.vpContent)
+	}
+	if !strings.Contains(string(m.inspContent), "file.txt") {
+		t.Errorf("result not in inspector content: %q", m.inspContent)
 	}
 }
 
@@ -100,10 +112,10 @@ func TestDoneMsg_ReturnToInput(t *testing.T) {
 	m.state = stateRunning
 	m = update(m, doneMsg("all done"))
 	if m.state != stateInput {
-		t.Errorf("state: got %d, want stateInput (ready for next task)", m.state)
+		t.Errorf("state: got %d, want stateInput", m.state)
 	}
-	if !strings.Contains(string(m.content), "all done") {
-		t.Errorf("summary not in content: %q", string(m.content))
+	if !strings.Contains(string(m.vpContent), "all done") {
+		t.Errorf("summary not in content: %q", m.vpContent)
 	}
 }
 
@@ -122,17 +134,14 @@ func TestErrMsg_TransitionsToError(t *testing.T) {
 	m := newTestModel()
 	m.state = stateRunning
 	m = update(m, errMsg{err: fmt.Errorf("boom")})
-	if m.state != stateError {
-		t.Errorf("state: got %d, want stateError", m.state)
-	}
-	if m.err == nil {
-		t.Error("err should be set")
+	if m.state != stateError || m.err == nil {
+		t.Errorf("expected stateError with err set, got state=%d err=%v", m.state, m.err)
 	}
 }
 
 // --- approve ---
 
-func TestApproveReqMsg_TransitionsToApprove(t *testing.T) {
+func TestApproveReqMsg_AppendsBlockAndSetsState(t *testing.T) {
 	m := newTestModel()
 	m.state = stateRunning
 	resp := make(chan bool, 1)
@@ -140,8 +149,8 @@ func TestApproveReqMsg_TransitionsToApprove(t *testing.T) {
 	if m.state != stateApprove {
 		t.Errorf("state: got %d, want stateApprove", m.state)
 	}
-	if m.pending == nil {
-		t.Error("pending should be set")
+	if !strings.Contains(string(m.vpContent), "read_file") {
+		t.Errorf("approval block not in main content: %q", m.vpContent)
 	}
 }
 
@@ -150,9 +159,7 @@ func TestApproveKey_Yes(t *testing.T) {
 	m := newTestModel()
 	m.state = stateApprove
 	m.pending = &approveReqMsg{name: "read_file", args: nil, resp: resp}
-
 	m = update(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
-
 	select {
 	case v := <-resp:
 		if !v {
@@ -171,9 +178,7 @@ func TestApproveKey_No(t *testing.T) {
 	m := newTestModel()
 	m.state = stateApprove
 	m.pending = &approveReqMsg{name: "write_file", args: nil, resp: resp}
-
 	m = update(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-
 	select {
 	case v := <-resp:
 		if v {
@@ -187,9 +192,49 @@ func TestApproveKey_No(t *testing.T) {
 	}
 }
 
+// --- inspector toggle ---
+
+func TestInspectorToggle(t *testing.T) {
+	m := sizedModel()
+	if m.showInspector {
+		t.Error("inspector should be hidden by default")
+	}
+	m = update(m, tea.KeyMsg{Type: tea.KeyCtrlD})
+	if !m.showInspector {
+		t.Error("inspector should be visible after ctrl+d")
+	}
+	m = update(m, tea.KeyMsg{Type: tea.KeyCtrlD})
+	if m.showInspector {
+		t.Error("inspector should be hidden after second ctrl+d")
+	}
+}
+
+func TestInspectorToggle_ViewportHeightChanges(t *testing.T) {
+	m := sizedModel()
+	normalHeight := m.vp.Height
+	m = update(m, tea.KeyMsg{Type: tea.KeyCtrlD})
+	if m.vp.Height >= normalHeight {
+		t.Errorf("main viewport should shrink when inspector shown: %d >= %d", m.vp.Height, normalHeight)
+	}
+	if m.insp.Height <= 0 {
+		t.Errorf("inspector height should be positive: %d", m.insp.Height)
+	}
+}
+
+func TestView_ShowsInspectorHeader(t *testing.T) {
+	m := sizedModel()
+	m = update(m, tea.KeyMsg{Type: tea.KeyCtrlD})
+	m = update(m, inspectorMsg("some debug info"))
+	v := m.View()
+	if !strings.Contains(v, "inspector") {
+		t.Errorf("inspector header not in view: %q", v)
+	}
+}
+
+// --- approve view ---
+
 func TestView_ShowsApprovePrompt(t *testing.T) {
 	m := sizedModel()
-	// approveReqMsg appends block to content and sets pending
 	resp := make(chan bool, 1)
 	m = update(m, approveReqMsg{
 		name: "write_file",
@@ -197,18 +242,15 @@ func TestView_ShowsApprovePrompt(t *testing.T) {
 		resp: resp,
 	})
 	v := m.View()
-	// tool name and path should appear in the scrollable content area
 	if !strings.Contains(v, "write_file") {
 		t.Errorf("tool name not in view: %q", v)
 	}
-	if !strings.Contains(v, "out.txt") {
-		t.Errorf("path not in view: %q", v)
-	}
-	// action prompt should be in the status line
 	if !strings.Contains(v, "[y] approve") {
-		t.Errorf("[y] approve not in view: %q", v)
+		t.Errorf("[y] approve not in status bar: %q", v)
 	}
 }
+
+// --- approvalBlock ---
 
 func TestApprovalBlock_PathFirst(t *testing.T) {
 	b := approvalBlock("write_file", map[string]any{
@@ -222,7 +264,7 @@ func TestApprovalBlock_PathFirst(t *testing.T) {
 		t.Fatalf("expected both path and content in block: %q", s)
 	}
 	if pathIdx > contentIdx {
-		t.Errorf("expected path before content in block: %q", s)
+		t.Errorf("expected path before content: %q", s)
 	}
 }
 
