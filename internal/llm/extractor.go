@@ -2,8 +2,8 @@ package llm
 
 // ToolCall represents a parsed tool invocation from model output.
 type ToolCall struct {
-	Name string
-	Args map[string]any
+	Name string         `json:"name"`
+	Args map[string]any `json:"args"`
 }
 
 // Extractor parses a raw model response into a ToolCall.
