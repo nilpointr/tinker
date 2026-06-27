@@ -21,9 +21,17 @@ const (
 	stateError
 )
 
-// Internal Bubble Tea message types sent from the agent goroutine.
+// inspHeight is the fixed number of rows the inspector pane occupies when shown.
+// mainHeight is derived from terminal height minus fixed chrome.
+const inspFixedRows = 5 // divider+header+divider+status = 4, plus the split between viewports
 
-type tokenMsg string
+// Internal Bubble Tea message types.
+
+// proseMsg carries the cleaned model response (tool block stripped) for the main viewport.
+type proseMsg string
+
+// inspectorMsg carries raw or structured content for the inspector pane.
+type inspectorMsg string
 
 type approveReqMsg struct {
 	name string
@@ -43,15 +51,18 @@ type Model struct {
 	pp     **tea.Program
 	cancel context.CancelFunc
 
-	state    state
-	input    textinput.Model
-	vp       viewport.Model
-	content  []byte // accumulates all output; viewport renders a window into it
-	pending  *approveReqMsg
-	err      error
-	width    int
-	height   int
-	ready    bool // true after first WindowSizeMsg
+	state        state
+	input        textinput.Model
+	vp           viewport.Model
+	vpContent    []byte
+	insp         viewport.Model
+	inspContent  []byte
+	showInspector bool
+	pending      *approveReqMsg
+	err          error
+	width        int
+	height       int
+	ready        bool
 }
 
 // New returns a Model ready to pass to tea.NewProgram.
@@ -77,55 +88,67 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.input.Width = msg.Width - 4
-		vpHeight := msg.Height - 2 // divider + status line
 		if !m.ready {
-			m.vp = viewport.New(msg.Width, vpHeight)
+			m.vp = viewport.New(msg.Width, msg.Height-2)
+			m.insp = viewport.New(msg.Width, m.inspHeight())
 			m.ready = true
-		} else {
-			m.vp.Width = msg.Width
-			m.vp.Height = vpHeight
 		}
-		m.vp.SetContent(string(m.content))
+		m = m.resized()
 		return m, nil
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
-	case tokenMsg:
-		m.content = append(m.content, msg...)
-		if m.ready {
-			m.vp.SetContent(string(m.content))
-			m.vp.GotoBottom()
+	case proseMsg:
+		if string(msg) != "" {
+			m.vpContent = fmt.Appendf(m.vpContent, "\n%s\n", string(msg))
+			if m.ready {
+				m.vp.SetContent(string(m.vpContent))
+				m.vp.GotoBottom()
+			}
+		}
+		return m, nil
+
+	case inspectorMsg:
+		m.inspContent = append(m.inspContent, msg...)
+		if m.ready && m.showInspector {
+			m.insp.SetContent(string(m.inspContent))
+			m.insp.GotoBottom()
 		}
 		return m, nil
 
 	case approveReqMsg:
 		m.state = stateApprove
 		m.pending = &msg
-		m.content = append(m.content, approvalBlock(msg.name, msg.args)...)
+		m.vpContent = append(m.vpContent, approvalBlock(msg.name, msg.args)...)
 		if m.ready {
-			m.vp.SetContent(string(m.content))
+			m.vp.SetContent(string(m.vpContent))
 			m.vp.GotoBottom()
 		}
 		return m, nil
 
 	case toolResultMsg:
-		m.content = fmt.Appendf(m.content, "\n  → %s\n\n", string(msg))
+		m.vpContent = fmt.Appendf(m.vpContent, "\n  → %s\n", string(msg))
 		if m.ready {
-			m.vp.SetContent(string(m.content))
+			m.vp.SetContent(string(m.vpContent))
 			m.vp.GotoBottom()
+		}
+		m.inspContent = fmt.Appendf(m.inspContent, "\n[result]\n%s\n", string(msg))
+		if m.ready && m.showInspector {
+			m.insp.SetContent(string(m.inspContent))
+			m.insp.GotoBottom()
 		}
 		m.state = stateRunning
 		return m, nil
 
 	case doneMsg:
 		if string(msg) != "" {
-			m.content = fmt.Appendf(m.content, "\n\nDone: %s\n\n", string(msg))
+			m.vpContent = fmt.Appendf(m.vpContent, "\n\nDone: %s\n\n", string(msg))
 		} else {
-			m.content = append(m.content, "\n\nDone.\n\n"...)
+			m.vpContent = append(m.vpContent, "\n\nDone.\n\n"...)
 		}
 		if m.ready {
-			m.vp.SetContent(string(m.content))
+			m.vp.SetContent(string(m.vpContent))
 			m.vp.GotoBottom()
 		}
 		m.state = stateInput
@@ -138,7 +161,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	default:
-		// Forward unhandled messages to active component (blink ticks, etc.).
 		var cmds []tea.Cmd
 		if m.state == stateInput {
 			var cmd tea.Cmd
@@ -155,6 +177,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// ctrl+d toggles inspector in all states.
+	if msg.String() == "ctrl+d" {
+		m.showInspector = !m.showInspector
+		m = m.resized()
+		if m.showInspector && m.ready {
+			m.insp.SetContent(string(m.inspContent))
+			m.insp.GotoBottom()
+		}
+		return m, nil
+	}
+
 	switch m.state {
 	case stateInput:
 		switch msg.Type {
@@ -167,9 +200,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.state = stateRunning
 			m.input.SetValue("")
-			m.content = fmt.Appendf(m.content, "> %s\n\n", task)
+			m.vpContent = fmt.Appendf(m.vpContent, "> %s\n", task)
 			if m.ready {
-				m.vp.SetContent(string(m.content))
+				m.vp.SetContent(string(m.vpContent))
 				m.vp.GotoBottom()
 			}
 			ctx, cancel := context.WithCancel(context.Background())
@@ -179,7 +212,22 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			go func() {
 				p := *pp
 				err := ag.Run(ctx, task, agent.RunOptions{
-					OnToken: func(tok string) { p.Send(tokenMsg(tok)) },
+					OnGenerateStart: func() {
+						p.Send(inspectorMsg("\n─── generating ───\n"))
+					},
+					OnToken: func(tok string) {
+						p.Send(inspectorMsg(tok))
+					},
+					OnProse: func(prose string) {
+						p.Send(proseMsg(prose))
+					},
+					OnToolCall: func(name string, args map[string]any) {
+						p.Send(inspectorMsg(fmt.Sprintf("\n[call] %s\n%s", name, inspectorArgs(args))))
+					},
+					OnRepair: func(attempt int, err error) {
+						p.Send(inspectorMsg(fmt.Sprintf("\n[repair %d/%d] %v\n", attempt, 3, err)))
+					},
+					OnToolResult: func(r string) { p.Send(toolResultMsg(r)) },
 					ShouldApprove: func(name string, args map[string]any) bool {
 						resp := make(chan bool, 1)
 						p.Send(approveReqMsg{name: name, args: args, resp: resp})
@@ -190,8 +238,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 							return false
 						}
 					},
-					OnToolResult: func(r string) { p.Send(toolResultMsg(r)) },
-					OnDone:       func(s string) { p.Send(doneMsg(s)) },
+					OnDone: func(s string) { p.Send(doneMsg(s)) },
 				})
 				if err != nil && err != context.Canceled {
 					p.Send(errMsg{err: err})
@@ -230,7 +277,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		default:
-			// Allow scrolling through history while waiting to approve.
 			if m.ready {
 				var cmd tea.Cmd
 				m.vp, cmd = m.vp.Update(msg)
@@ -267,22 +313,63 @@ func (m Model) View() string {
 	case stateInput:
 		statusLine = m.input.View()
 	case stateRunning:
-		statusLine = "  running… (ctrl+c to cancel)"
+		statusLine = "  running… (ctrl+c to cancel  ctrl+d inspector)"
 	case stateApprove:
 		statusLine = "  [y] approve   [n] deny   (ctrl+c to cancel)"
 	case stateError:
 		statusLine = fmt.Sprintf("  error: %v (ctrl+c to exit)", m.err)
 	}
 
+	if m.showInspector {
+		label := " inspector  ctrl+d to hide "
+		var header string
+		if m.width > len(label) {
+			header = label + strings.Repeat("─", m.width-len(label))
+		} else {
+			header = label[:m.width]
+		}
+		return m.vp.View() + "\n" + header + "\n" + m.insp.View() + "\n" + divider + "\n" + statusLine
+	}
 	return m.vp.View() + "\n" + divider + "\n" + statusLine
 }
 
-// approvalBlock renders a pending tool call into the content area so the user
-// can scroll through long args (e.g. a write_file content arg) before deciding.
+// inspHeight returns the target height for the inspector pane.
+func (m Model) inspHeight() int {
+	h := m.height / 3
+	if h < 3 {
+		h = 3
+	}
+	return h
+}
+
+// resized recalculates viewport dimensions after a size or layout change.
+func (m Model) resized() Model {
+	if !m.ready {
+		return m
+	}
+	if m.showInspector {
+		ih := m.inspHeight()
+		// main + header + insp + divider + status = height
+		// header=1, divider=1, status=1 → fixed=3; plus 2 \n separators
+		mh := m.height - ih - 5
+		if mh < 1 {
+			mh = 1
+		}
+		m.vp.Width = m.width
+		m.vp.Height = mh
+		m.insp.Width = m.width
+		m.insp.Height = ih
+	} else {
+		m.vp.Width = m.width
+		m.vp.Height = m.height - 2
+	}
+	return m
+}
+
+// approvalBlock renders a pending tool call into the content area.
 func approvalBlock(name string, args map[string]any) []byte {
 	var b []byte
 	b = fmt.Appendf(b, "\n  ? %s\n", name)
-	// path first so it's always prominent, then remaining args
 	if p, ok := args["path"]; ok {
 		b = fmt.Appendf(b, "    path: %s\n", p)
 	}
@@ -302,4 +389,23 @@ func approvalBlock(name string, args map[string]any) []byte {
 	}
 	b = append(b, '\n')
 	return b
+}
+
+// inspectorArgs formats tool args for the inspector pane.
+func inspectorArgs(args map[string]any) string {
+	var b strings.Builder
+	if p, ok := args["path"]; ok {
+		fmt.Fprintf(&b, "  path: %s\n", p)
+	}
+	for k, v := range args {
+		if k == "path" {
+			continue
+		}
+		val := fmt.Sprint(v)
+		if len(val) > 80 {
+			val = val[:80] + "…"
+		}
+		fmt.Fprintf(&b, "  %s: %s\n", k, val)
+	}
+	return b.String()
 }
