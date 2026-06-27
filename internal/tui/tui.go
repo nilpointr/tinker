@@ -102,6 +102,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case approveReqMsg:
 		m.state = stateApprove
 		m.pending = &msg
+		m.content = append(m.content, approvalBlock(msg.name, msg.args)...)
+		if m.ready {
+			m.vp.SetContent(string(m.content))
+			m.vp.GotoBottom()
+		}
 		return m, nil
 
 	case toolResultMsg:
@@ -264,10 +269,7 @@ func (m Model) View() string {
 	case stateRunning:
 		statusLine = "  running… (ctrl+c to cancel)"
 	case stateApprove:
-		if m.pending != nil {
-			statusLine = fmt.Sprintf("  Run %s(%s)? [y/n]",
-				m.pending.name, formatArgs(m.pending.args))
-		}
+		statusLine = "  [y] approve   [n] deny   (ctrl+c to cancel)"
 	case stateError:
 		statusLine = fmt.Sprintf("  error: %v (ctrl+c to exit)", m.err)
 	}
@@ -275,10 +277,29 @@ func (m Model) View() string {
 	return m.vp.View() + "\n" + divider + "\n" + statusLine
 }
 
-func formatArgs(args map[string]any) string {
-	parts := make([]string, 0, len(args))
-	for k, v := range args {
-		parts = append(parts, fmt.Sprintf("%s=%q", k, fmt.Sprint(v)))
+// approvalBlock renders a pending tool call into the content area so the user
+// can scroll through long args (e.g. a write_file content arg) before deciding.
+func approvalBlock(name string, args map[string]any) []byte {
+	var b []byte
+	b = fmt.Appendf(b, "\n  ? %s\n", name)
+	// path first so it's always prominent, then remaining args
+	if p, ok := args["path"]; ok {
+		b = fmt.Appendf(b, "    path: %s\n", p)
 	}
-	return strings.Join(parts, ", ")
+	for k, v := range args {
+		if k == "path" {
+			continue
+		}
+		val := fmt.Sprint(v)
+		if strings.Contains(val, "\n") {
+			b = fmt.Appendf(b, "    %s:\n", k)
+			for _, line := range strings.Split(val, "\n") {
+				b = fmt.Appendf(b, "      %s\n", line)
+			}
+		} else {
+			b = fmt.Appendf(b, "    %s: %s\n", k, val)
+		}
+	}
+	b = append(b, '\n')
+	return b
 }
