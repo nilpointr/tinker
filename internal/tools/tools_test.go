@@ -86,6 +86,36 @@ func TestReadFile_MissingArg(t *testing.T) {
 	}
 }
 
+func TestReadFile_BinaryRejected(t *testing.T) {
+	root := t.TempDir()
+	// null byte makes it binary
+	data := []byte("text\x00binary")
+	if err := os.WriteFile(filepath.Join(root, "bin.dat"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	tool := ReadFile{root: root}
+	_, err := tool.Execute(context.Background(), map[string]any{"path": "bin.dat"})
+	if err == nil {
+		t.Fatal("expected error for binary file")
+	}
+}
+
+func TestReadFile_TooLargeRejected(t *testing.T) {
+	root := t.TempDir()
+	data := make([]byte, maxReadBytes+1)
+	for i := range data {
+		data[i] = 'a'
+	}
+	if err := os.WriteFile(filepath.Join(root, "big.txt"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	tool := ReadFile{root: root}
+	_, err := tool.Execute(context.Background(), map[string]any{"path": "big.txt"})
+	if err == nil {
+		t.Fatal("expected error for oversized file")
+	}
+}
+
 // --- WriteFile ---
 
 func TestWriteFile_Success(t *testing.T) {

@@ -112,8 +112,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.lines = append(m.lines, "Done.")
 		}
-		m.state = stateDone
-		return m, nil
+		m.lines = append(m.lines, "")
+		m.state = stateInput
+		m.input.Focus()
+		return m, textinput.Blink
 
 	case errMsg:
 		m.err = msg.err
