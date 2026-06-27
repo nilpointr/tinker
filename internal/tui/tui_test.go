@@ -189,17 +189,50 @@ func TestApproveKey_No(t *testing.T) {
 
 func TestView_ShowsApprovePrompt(t *testing.T) {
 	m := sizedModel()
-	m.state = stateApprove
-	m.pending = &approveReqMsg{
+	// approveReqMsg appends block to content and sets pending
+	resp := make(chan bool, 1)
+	m = update(m, approveReqMsg{
 		name: "write_file",
-		args: map[string]any{"path": "out.txt"},
-		resp: make(chan bool, 1),
-	}
+		args: map[string]any{"path": "out.txt", "content": "hello"},
+		resp: resp,
+	})
 	v := m.View()
+	// tool name and path should appear in the scrollable content area
 	if !strings.Contains(v, "write_file") {
-		t.Errorf("approve prompt not in view: %q", v)
+		t.Errorf("tool name not in view: %q", v)
 	}
-	if !strings.Contains(v, "[y/n]") {
-		t.Errorf("[y/n] not in view: %q", v)
+	if !strings.Contains(v, "out.txt") {
+		t.Errorf("path not in view: %q", v)
+	}
+	// action prompt should be in the status line
+	if !strings.Contains(v, "[y] approve") {
+		t.Errorf("[y] approve not in view: %q", v)
+	}
+}
+
+func TestApprovalBlock_PathFirst(t *testing.T) {
+	b := approvalBlock("write_file", map[string]any{
+		"path":    "foo.txt",
+		"content": "bar",
+	})
+	s := string(b)
+	pathIdx := strings.Index(s, "path:")
+	contentIdx := strings.Index(s, "content:")
+	if pathIdx == -1 || contentIdx == -1 {
+		t.Fatalf("expected both path and content in block: %q", s)
+	}
+	if pathIdx > contentIdx {
+		t.Errorf("expected path before content in block: %q", s)
+	}
+}
+
+func TestApprovalBlock_MultilineContent(t *testing.T) {
+	b := approvalBlock("write_file", map[string]any{
+		"path":    "out.txt",
+		"content": "line1\nline2\nline3",
+	})
+	s := string(b)
+	if !strings.Contains(s, "line1") || !strings.Contains(s, "line2") {
+		t.Errorf("multiline content not rendered: %q", s)
 	}
 }
