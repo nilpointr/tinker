@@ -1,5 +1,10 @@
 # tinker
 
+[![CI](https://github.com/nilpointr/tinker/actions/workflows/ci.yml/badge.svg)](https://github.com/nilpointr/tinker/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/nilpointr/tinker)](https://goreportcard.com/report/github.com/nilpointr/tinker)
+[![Go 1.26+](https://img.shields.io/badge/go-1.26+-00ADD8?logo=go)](https://go.dev)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A terminal coding agent built in Go. Tinker hands a local [Ollama](https://ollama.com)
 model a JSON tool-calling protocol and write access to your filesystem, then studies
 what happens next. The goal is to learn agent harness mechanics — reasoning loop,
@@ -30,6 +35,13 @@ make build          # produces bin/tinker
 ```
 
 Tinker scopes all file operations to the directory it is launched from.
+
+| Key | Action |
+|---|---|
+| `Enter` | Submit a task |
+| `y` / `n` | Approve or deny a tool call |
+| `ctrl+d` | Toggle inspector pane (raw token stream + tool events) |
+| `ctrl+c` | Cancel / quit |
 
 ## Development
 
