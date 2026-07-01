@@ -166,8 +166,12 @@ func TestWriteFile_PathEscape(t *testing.T) {
 
 func TestListDir_Success(t *testing.T) {
 	root := t.TempDir()
-	os.WriteFile(filepath.Join(root, "a.go"), []byte(""), 0644)
-	os.MkdirAll(filepath.Join(root, "sub"), 0755)
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte(""), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
 
 	tool := ListDir{root: root}
 	out, err := tool.Execute(context.Background(), map[string]any{"path": "."})
@@ -217,7 +221,9 @@ func TestRegistry_UnknownTool(t *testing.T) {
 
 func TestRegistry_Dispatch(t *testing.T) {
 	root := t.TempDir()
-	os.WriteFile(filepath.Join(root, "file.txt"), []byte("content"), 0644)
+	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("content"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
 
 	r := NewRegistry(root)
 	out, err := r.Execute(context.Background(), "read_file", map[string]any{"path": "file.txt"})

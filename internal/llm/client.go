@@ -84,7 +84,7 @@ func (c *Client) Chat(ctx context.Context, messages []Message, onToken func(stri
 	if err != nil {
 		return Message{}, fmt.Errorf("send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return Message{}, fmt.Errorf("ollama: unexpected status %d", resp.StatusCode)
