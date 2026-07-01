@@ -51,18 +51,18 @@ type Model struct {
 	pp     **tea.Program
 	cancel context.CancelFunc
 
-	state        state
-	input        textinput.Model
-	vp           viewport.Model
-	vpContent    []byte
-	insp         viewport.Model
-	inspContent  []byte
+	state         state
+	input         textinput.Model
+	vp            viewport.Model
+	vpContent     []byte
+	insp          viewport.Model
+	inspContent   []byte
 	showInspector bool
-	pending      *approveReqMsg
-	err          error
-	width        int
-	height       int
-	ready        bool
+	pending       *approveReqMsg
+	err           error
+	width         int
+	height        int
+	ready         bool
 }
 
 // New returns a Model ready to pass to tea.NewProgram.
@@ -101,55 +101,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case proseMsg:
 		if string(msg) != "" {
-			m.vpContent = fmt.Appendf(m.vpContent, "\n%s\n", string(msg))
-			if m.ready {
-				m.vp.SetContent(string(m.vpContent))
-				m.vp.GotoBottom()
-			}
+			m = m.appendVP(fmt.Appendf(nil, "\n%s\n", string(msg)))
 		}
 		return m, nil
 
 	case inspectorMsg:
-		m.inspContent = append(m.inspContent, msg...)
-		if m.ready && m.showInspector {
-			m.insp.SetContent(string(m.inspContent))
-			m.insp.GotoBottom()
-		}
+		m = m.appendInsp([]byte(msg))
 		return m, nil
 
 	case approveReqMsg:
 		m.state = stateApprove
 		m.pending = &msg
-		m.vpContent = append(m.vpContent, approvalBlock(msg.name, msg.args)...)
-		if m.ready {
-			m.vp.SetContent(string(m.vpContent))
-			m.vp.GotoBottom()
-		}
+		m = m.appendVP(approvalBlock(msg.name, msg.args))
 		return m, nil
 
 	case toolResultMsg:
-		m.vpContent = fmt.Appendf(m.vpContent, "\n  → %s\n", string(msg))
-		if m.ready {
-			m.vp.SetContent(string(m.vpContent))
-			m.vp.GotoBottom()
-		}
-		m.inspContent = fmt.Appendf(m.inspContent, "\n[result]\n%s\n", string(msg))
-		if m.ready && m.showInspector {
-			m.insp.SetContent(string(m.inspContent))
-			m.insp.GotoBottom()
-		}
+		m = m.appendVP(fmt.Appendf(nil, "\n  → %s\n", string(msg)))
+		m = m.appendInsp(fmt.Appendf(nil, "\n[result]\n%s\n", string(msg)))
 		m.state = stateRunning
 		return m, nil
 
 	case doneMsg:
 		if string(msg) != "" {
-			m.vpContent = fmt.Appendf(m.vpContent, "\n\nDone: %s\n\n", string(msg))
+			m = m.appendVP(fmt.Appendf(nil, "\n\nDone: %s\n\n", string(msg)))
 		} else {
-			m.vpContent = append(m.vpContent, "\n\nDone.\n\n"...)
-		}
-		if m.ready {
-			m.vp.SetContent(string(m.vpContent))
-			m.vp.GotoBottom()
+			m = m.appendVP([]byte("\n\nDone.\n\n"))
 		}
 		m.state = stateInput
 		m.input.Focus()
@@ -176,129 +152,172 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
+// appendVP appends content to the main viewport and refreshes it if ready.
+func (m Model) appendVP(content []byte) Model {
+	m.vpContent = append(m.vpContent, content...)
+	if m.ready {
+		m.vp.SetContent(string(m.vpContent))
+		m.vp.GotoBottom()
+	}
+	return m
+}
+
+// appendInsp appends content to the inspector pane and refreshes it if shown.
+func (m Model) appendInsp(content []byte) Model {
+	m.inspContent = append(m.inspContent, content...)
+	if m.ready && m.showInspector {
+		m.insp.SetContent(string(m.inspContent))
+		m.insp.GotoBottom()
+	}
+	return m
+}
+
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// ctrl+d toggles inspector in all states.
 	if msg.String() == "ctrl+d" {
-		m.showInspector = !m.showInspector
-		m = m.resized()
-		if m.showInspector && m.ready {
-			m.insp.SetContent(string(m.inspContent))
-			m.insp.GotoBottom()
-		}
-		return m, nil
+		return m.toggleInspector()
 	}
 
 	switch m.state {
 	case stateInput:
-		switch msg.Type {
-		case tea.KeyCtrlC, tea.KeyEsc:
-			return m, tea.Quit
-		case tea.KeyEnter:
-			task := strings.TrimSpace(m.input.Value())
-			if task == "" {
-				return m, nil
-			}
-			m.state = stateRunning
-			m.input.SetValue("")
-			m.vpContent = fmt.Appendf(m.vpContent, "> %s\n", task)
-			if m.ready {
-				m.vp.SetContent(string(m.vpContent))
-				m.vp.GotoBottom()
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			m.cancel = cancel
-			pp := m.pp
-			ag := m.ag
-			go func() {
-				p := *pp
-				err := ag.Run(ctx, task, agent.RunOptions{
-					OnGenerateStart: func() {
-						p.Send(inspectorMsg("\n─── generating ───\n"))
-					},
-					OnToken: func(tok string) {
-						p.Send(inspectorMsg(tok))
-					},
-					OnProse: func(prose string) {
-						p.Send(proseMsg(prose))
-					},
-					OnToolCall: func(name string, args map[string]any) {
-						p.Send(inspectorMsg(fmt.Sprintf("\n[call] %s\n%s", name, inspectorArgs(args))))
-					},
-					OnRepair: func(attempt int, err error) {
-						p.Send(inspectorMsg(fmt.Sprintf("\n[repair %d/%d] %v\n", attempt, 3, err)))
-					},
-					OnToolResult: func(r string) { p.Send(toolResultMsg(r)) },
-					ShouldApprove: func(name string, args map[string]any) bool {
-						resp := make(chan bool, 1)
-						p.Send(approveReqMsg{name: name, args: args, resp: resp})
-						select {
-						case v := <-resp:
-							return v
-						case <-ctx.Done():
-							return false
-						}
-					},
-					OnDone: func(s string) { p.Send(doneMsg(s)) },
-				})
-				if err != nil && err != context.Canceled {
-					p.Send(errMsg{err: err})
-				}
-			}()
-			return m, nil
-		default:
-			var cmd tea.Cmd
-			m.input, cmd = m.input.Update(msg)
-			return m, cmd
-		}
-
+		return m.handleInputKey(msg)
 	case stateApprove:
-		switch msg.String() {
-		case "y", "Y":
-			if m.pending != nil {
-				m.pending.resp <- true
-				m.pending = nil
-			}
-			m.state = stateRunning
-			return m, nil
-		case "n", "N":
-			if m.pending != nil {
-				m.pending.resp <- false
-				m.pending = nil
-			}
-			m.state = stateRunning
-			return m, nil
-		case "ctrl+c":
-			if m.pending != nil {
-				m.pending.resp <- false
-				m.pending = nil
-			}
-			if m.cancel != nil {
-				m.cancel()
-			}
-			return m, tea.Quit
-		default:
-			if m.ready {
-				var cmd tea.Cmd
-				m.vp, cmd = m.vp.Update(msg)
-				return m, cmd
-			}
-		}
-
+		return m.handleApproveKey(msg)
 	case stateRunning, stateError:
-		if msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyEsc {
-			if m.cancel != nil {
-				m.cancel()
-			}
-			return m, tea.Quit
+		return m.handleActiveKey(msg)
+	}
+
+	return m, nil
+}
+
+// toggleInspector shows or hides the inspector pane in response to ctrl+d.
+func (m Model) toggleInspector() (tea.Model, tea.Cmd) {
+	m.showInspector = !m.showInspector
+	m = m.resized()
+	if m.showInspector && m.ready {
+		m.insp.SetContent(string(m.inspContent))
+		m.insp.GotoBottom()
+	}
+	return m, nil
+}
+
+// handleInputKey handles key presses while the user is typing a task.
+func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC, tea.KeyEsc:
+		return m, tea.Quit
+	case tea.KeyEnter:
+		task := strings.TrimSpace(m.input.Value())
+		if task == "" {
+			return m, nil
 		}
+		m.state = stateRunning
+		m.input.SetValue("")
+		m = m.appendVP(fmt.Appendf(nil, "> %s\n", task))
+		m = m.startAgent(task)
+		return m, nil
+	default:
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
+	}
+}
+
+// handleApproveKey handles y/n/ctrl+c while a tool call awaits approval.
+func (m Model) handleApproveKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		if m.pending != nil {
+			m.pending.resp <- true
+			m.pending = nil
+		}
+		m.state = stateRunning
+		return m, nil
+	case "n", "N":
+		if m.pending != nil {
+			m.pending.resp <- false
+			m.pending = nil
+		}
+		m.state = stateRunning
+		return m, nil
+	case "ctrl+c":
+		if m.pending != nil {
+			m.pending.resp <- false
+			m.pending = nil
+		}
+		if m.cancel != nil {
+			m.cancel()
+		}
+		return m, tea.Quit
+	default:
 		if m.ready {
 			var cmd tea.Cmd
 			m.vp, cmd = m.vp.Update(msg)
 			return m, cmd
 		}
 	}
-
 	return m, nil
+}
+
+// handleActiveKey handles key presses while the agent is running or errored.
+func (m Model) handleActiveKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyEsc {
+		if m.cancel != nil {
+			m.cancel()
+		}
+		return m, tea.Quit
+	}
+	if m.ready {
+		var cmd tea.Cmd
+		m.vp, cmd = m.vp.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+// startAgent launches ag.Run for task in a background goroutine, wiring its
+// callbacks to send messages back into the Bubble Tea program.
+func (m Model) startAgent(task string) Model {
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	pp := m.pp
+	ag := m.ag
+	go func() {
+		p := *pp
+		err := ag.Run(ctx, task, agent.RunOptions{
+			OnGenerateStart: func() {
+				p.Send(inspectorMsg("\n─── generating ───\n"))
+			},
+			OnToken: func(tok string) {
+				p.Send(inspectorMsg(tok))
+			},
+			OnProse: func(prose string) {
+				p.Send(proseMsg(prose))
+			},
+			OnToolCall: func(name string, args map[string]any) {
+				p.Send(inspectorMsg(fmt.Sprintf("\n[call] %s\n%s", name, inspectorArgs(args))))
+			},
+			OnRepair: func(attempt int, err error) {
+				p.Send(inspectorMsg(fmt.Sprintf("\n[repair %d/%d] %v\n", attempt, 3, err)))
+			},
+			OnToolResult: func(r string) { p.Send(toolResultMsg(r)) },
+			ShouldApprove: func(name string, args map[string]any) bool {
+				resp := make(chan bool, 1)
+				p.Send(approveReqMsg{name: name, args: args, resp: resp})
+				select {
+				case v := <-resp:
+					return v
+				case <-ctx.Done():
+					return false
+				}
+			},
+			OnDone: func(s string) { p.Send(doneMsg(s)) },
+		})
+		if err != nil && err != context.Canceled {
+			p.Send(errMsg{err: err})
+		}
+	}()
+	return m
 }
 
 func (m Model) View() string {
