@@ -370,7 +370,7 @@ func (m Model) resized() Model {
 		ih := m.inspHeight()
 		// main + header + insp + divider + status = height
 		// header=1, divider=1, status=1 → fixed=3; plus 2 \n separators
-		mh := m.height - ih - 5
+		mh := m.height - ih - inspFixedRows
 		if mh < 1 {
 			mh = 1
 		}

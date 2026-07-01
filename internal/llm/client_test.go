@@ -36,7 +36,7 @@ func testServer(t *testing.T, h http.HandlerFunc) *httptest.Server {
 func TestChat_Success(t *testing.T) {
 	tokens := []string{"Hello", ", ", "world", "!"}
 	srv := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, makeChunks(tokens))
+		_, _ = fmt.Fprint(w, makeChunks(tokens))
 	})
 
 	client := NewClient("test-model", WithBaseURL(srv.URL))
@@ -63,7 +63,7 @@ func TestChat_Success(t *testing.T) {
 
 func TestChat_NilCallbackSucceeds(t *testing.T) {
 	srv := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, makeChunks([]string{"ok"}))
+		_, _ = fmt.Fprint(w, makeChunks([]string{"ok"}))
 	})
 	client := NewClient("test-model", WithBaseURL(srv.URL))
 	msg, err := client.Chat(context.Background(), nil, nil)
@@ -78,12 +78,12 @@ func TestChat_NilCallbackSucceeds(t *testing.T) {
 func TestChat_RequestShape(t *testing.T) {
 	var got chatRequest
 	srv := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&got)
-		fmt.Fprint(w, makeChunks([]string{"ok"}))
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = fmt.Fprint(w, makeChunks([]string{"ok"}))
 	})
 
 	client := NewClient("qwen2.5-coder:14b", WithBaseURL(srv.URL), WithNumCtx(16384))
-	client.Chat(context.Background(), []Message{{Role: RoleUser, Content: "test"}}, nil)
+	_, _ = client.Chat(context.Background(), []Message{{Role: RoleUser, Content: "test"}}, nil)
 
 	if got.Model != "qwen2.5-coder:14b" {
 		t.Errorf("model: got %q, want %q", got.Model, "qwen2.5-coder:14b")
@@ -109,7 +109,7 @@ func TestChat_NonOKStatus(t *testing.T) {
 
 func TestChat_MalformedChunk(t *testing.T) {
 	srv := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "not valid json")
+		_, _ = fmt.Fprintln(w, "not valid json")
 	})
 	client := NewClient("test-model", WithBaseURL(srv.URL))
 	_, err := client.Chat(context.Background(), nil, nil)
@@ -123,7 +123,7 @@ func TestChat_CancelledContext(t *testing.T) {
 	cancel()
 
 	srv := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, makeChunks([]string{"token"}))
+		_, _ = fmt.Fprint(w, makeChunks([]string{"token"}))
 	})
 	client := NewClient("test-model", WithBaseURL(srv.URL))
 	_, err := client.Chat(ctx, nil, nil)
